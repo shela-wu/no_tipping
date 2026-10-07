@@ -70,6 +70,7 @@ def serve(bots, args):
               'display_delay': 0}
     resume_game = threading.Event()
     cancel_tournament = threading.Event()
+    announced_games = set()
     page = (Path(__file__).resolve().parent.parent / 'web' / 'index.html').read_bytes()
 
     def public_bot(bot):
@@ -77,6 +78,44 @@ def serve(bots, args):
 
     def save_result_locked():
         output_path.write_text(json.dumps(status['result'], indent=2))
+
+    def publish_game_complete_locked(game, pair_index, round_number, pairing_count):
+        next_action = ('round2' if round_number == 1 else
+                       'next_pair' if pair_index + 1 < pairing_count else None)
+        result = status['result']
+        saved_game = next((g for g in result['games']
+                           if str(g.get('game_id')) == str(game['game_id'])), None)
+        if saved_game is None:
+            saved_game = dict(game)
+            result['games'].append(saved_game)
+            result['scores'][game['winner']] = result['scores'].get(game['winner'], 0) + 1
+        saved_game.update(pairing_id=game['pairing_id'], round_number=round_number,
+                          pairing_number=pair_index + 1, pairing_count=pairing_count,
+                          pairing_bots=game['pairing_bots'])
+        pair_names = game['pairing_bots']
+        pair_score = {name: 0 for name in pair_names}
+        for completed in result['games']:
+            if completed.get('pairing_id') == game['pairing_id']:
+                winner = completed['winner']
+                pair_score[winner] = pair_score.get(winner, 0) + 1
+        status.update(live=None, next_action=next_action,
+                      announcement={
+                          'id': str(game['game_id']),
+                          'round_number': round_number,
+                          'pairing_number': pair_index + 1,
+                          'pairing_count': pairing_count,
+                          'pairing_bots': pair_names,
+                          'game_players': game['players'],
+                          'winner': game['winner'],
+                          'reason': game['reason'],
+                          'pair_score': pair_score,
+                          'overall_scores': dict(result['scores']),
+                          'next_action': next_action,
+                      })
+        if next_action:
+            resume_game.clear()
+        announced_games.add(str(game['game_id']))
+        save_result_locked()
 
     def progress(update):
         with lock:
@@ -91,44 +130,24 @@ def serve(bots, args):
                     game = {'game_id': game_id, 'players': update['players'],
                             'player_info': update['player_info'], 'winner': winner_name,
                             'winner_index': last['winner'], 'reason': last.get('reason'),
-                            'clock_seconds': status['clock_seconds'], 'frames': frames}
+                            'clock_seconds': status['clock_seconds'], 'frames': frames,
+                            'pairing_id': update['pairing_id'],
+                            'round_number': update['round_number'],
+                            'pairing_number': update['pairing_number'],
+                            'pairing_count': update['pairing_count'],
+                            'pairing_bots': update['pairing_bots']}
                     result['games'].append(game)
                     result['scores'][winner_name] = result['scores'].get(winner_name, 0) + 1
-                    save_result_locked()
+                    publish_game_complete_locked(
+                        game, update['pairing_number'] - 1,
+                        update['round_number'], update['pairing_count'])
 
     def game_complete(game, pair_index, round_number, pairing_count):
         next_action = ('round2' if round_number == 1 else
                        'next_pair' if pair_index + 1 < pairing_count else None)
         with lock:
-            result = status['result']
-            saved_game = next(g for g in result['games']
-                              if str(g.get('game_id')) == str(game['game_id']))
-            saved_game.update(pairing_id=game['pairing_id'], round_number=round_number,
-                              pairing_number=pair_index + 1, pairing_count=pairing_count,
-                              pairing_bots=game['pairing_bots'])
-            pair_names = game['pairing_bots']
-            pair_score = {name: 0 for name in pair_names}
-            for completed in result['games']:
-                if completed.get('pairing_id') == game['pairing_id']:
-                    winner = completed['winner']
-                    pair_score[winner] = pair_score.get(winner, 0) + 1
-            status.update(live=None, next_action=next_action,
-                          announcement={
-                              'id': str(game['game_id']),
-                              'round_number': round_number,
-                              'pairing_number': pair_index + 1,
-                              'pairing_count': pairing_count,
-                              'pairing_bots': pair_names,
-                              'game_players': game['players'],
-                              'winner': game['winner'],
-                              'reason': game['reason'],
-                              'pair_score': pair_score,
-                              'overall_scores': dict(result['scores']),
-                              'next_action': next_action,
-                          })
-            if next_action:
-                resume_game.clear()
-            save_result_locked()
+            if str(game['game_id']) not in announced_games:
+                publish_game_complete_locked(game, pair_index, round_number, pairing_count)
         if next_action and not cancel_tournament.is_set():
             resume_game.wait()
         if next_action:
@@ -192,6 +211,7 @@ def serve(bots, args):
                                   cancelled=False, display_delay=0,
                                   tournament_id=status['tournament_id'] + 1)
                     cancel_tournament.clear()
+                    announced_games.clear()
                     try:
                         output_path.unlink()
                     except FileNotFoundError:

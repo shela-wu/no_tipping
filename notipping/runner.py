@@ -337,8 +337,18 @@ def tournament(bots, k=15, clock_seconds=120, on_progress=None, pairing=None,
         for round_number, ordered in enumerate(([a, b], [b, a]), start=1):
             if cancel_event is not None and cancel_event.is_set():
                 raise TournamentCancelled()
+
+            def report_progress(update):
+                if on_progress:
+                    on_progress({**update, 'pairing_id': pair_id,
+                                 'round_number': round_number,
+                                 'pairing_number': pair_index + 1,
+                                 'pairing_count': len(pairs),
+                                 'pairing_bots': [a['name'], b['name']]})
+
             result = play(ordered, k, clock_seconds, str(game_id_start + len(games)),
-                          on_progress, cancel_event, display_delay)
+                          report_progress if on_progress else None,
+                          cancel_event, display_delay)
             result.update(pairing_id=pair_id, round_number=round_number,
                           pairing_number=pair_index + 1, pairing_count=len(pairs),
                           pairing_bots=[a['name'], b['name']])
