@@ -151,6 +151,31 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(sum(r['scores'].values()), 2)
         self.assertTrue(all(g['reason'] == 'tipping' for g in r['games']))
 
+    def test_timeout_is_a_loss_and_does_not_block_round_two(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            bots = [
+                {
+                    'name': 'Slow', 'cwd': cwd, 'icon': '🐌', 'color': '#123456',
+                    'command': [sys.executable, '-u', '-c',
+                                'import time; time.sleep(2)'],
+                },
+                {
+                    'name': 'Fast', 'cwd': cwd, 'icon': '⚡', 'color': '#654321',
+                    'command': [sys.executable, '-u', '-c',
+                                'import json,sys\n'
+                                'for line in sys.stdin:\n'
+                                ' print(json.dumps({"position":-3,"weight":1}), flush=True)'],
+                },
+            ]
+
+            result = tournament(bots, k=1, clock_seconds=.05,
+                                 pairing=['Slow', 'Fast'])
+
+        self.assertEqual(len(result['games']), 2)
+        self.assertEqual([game['reason'] for game in result['games']], ['time', 'time'])
+        self.assertEqual([game['winner'] for game in result['games']], ['Fast', 'Fast'])
+        self.assertEqual(result['scores'], {'Slow': 0, 'Fast': 2})
+
     def test_tournament_reports_each_round_before_continuing(self):
         bots = load_bots(Path(__file__).resolve().parents[1] / 'bots.json')[:2]
         callbacks = []

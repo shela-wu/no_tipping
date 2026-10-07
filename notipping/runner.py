@@ -18,6 +18,12 @@ OUTPUT_LIMIT = 65536
 
 class TournamentCancelled(Exception):
     """Raised when the organizer stops a tournament while a bot is running."""
+
+
+class BotTimedOut(ValueError):
+    """Raised when a bot does not return its move before its clock expires."""
+
+
 BOT_ICONS = (
     '🐙', '🤖', '🎲', '🐍', '🦊', '🚀', '🐸', '🐼', '🦉', '🐝', '🐬', '🦄',
     '🐢', '🦖', '🦋', '🐳', '🐧', '🐱', '🐯', '🦁', '🌟', '🔮', '🛸', '🍀',
@@ -168,7 +174,7 @@ class BotSession:
                 if cancel_event is not None and cancel_event.is_set():
                     raise TournamentCancelled()
                 if time.monotonic() >= deadline:
-                    raise ValueError('move timed out')
+                    raise BotTimedOut('move timed out')
                 if self.proc.poll() is not None:
                     raise ValueError('bot exited before returning a move')
             if cancel_event is not None and cancel_event.is_set():
@@ -180,7 +186,7 @@ class BotSession:
                     raise ValueError(self.protocol_error)
                 response = turn['response']
             if time.monotonic() > deadline:
-                raise ValueError('clock expired')
+                raise BotTimedOut('clock expired')
             if response is None:
                 raise ValueError('bot exited without returning a move')
             return json.loads(response.decode())
@@ -269,13 +275,16 @@ def play(bots, k, clock_seconds, game_id, on_progress=None, cancel_event=None,
             started = time.monotonic()
             try:
                 if clocks[player] <= 0:
-                    raise ValueError('clock expired')
+                    raise BotTimedOut('clock expired')
                 move = sessions[player].get_move(state, clocks[player], cancel_event)
                 elapsed = time.monotonic() - started
                 clocks[player] = max(0.0, clocks[player] - elapsed)
                 game.apply(move)
             except TournamentCancelled:
                 raise
+            except BotTimedOut:
+                clocks[player] = 0.0
+                game.forfeit('time')
             except (OSError, ValueError, IllegalMove) as exc:
                 elapsed = time.monotonic() - started
                 clocks[player] = max(0.0, clocks[player] - elapsed)
